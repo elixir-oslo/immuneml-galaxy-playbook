@@ -33,6 +33,24 @@ galaxy_database_password: "CHANGE_ME_STRONG_PASSWORD"
 # ---------------------------------------------------------------------
 galaxy_enable_conda_dependencies: true
 
+conda_prefix: "{{ galaxy_root_resolved }}/mutable/dependencies/_conda"
+conda_auto_init: true
+conda_auto_install: true
+
+conda_channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+# Important:
+# Galaxy invokes Conda with --solver libmamba.
+# Do not set CONDA_NO_PLUGINS=true.
+conda_solver: "libmamba"
+
+# Compatibility with galaxyproject.miniconda role
+miniconda_prefix: "{{ conda_prefix }}"
+miniconda_channels: "{{ conda_channels }}"
+
 # ---------------------------------------------------------------------
 # HTTPS configuration
 # ---------------------------------------------------------------------
@@ -54,17 +72,18 @@ immuneml_cli_runtime_enabled: false
 # ---------------------------------------------------------------------
 # Standard immuneML Galaxy wrappers.
 immuneml_tools_repo_url: "https://github.com/uio-bmi/immuneml_tools.git"
-immuneml_tools_version: "main"  #"main""update-immuneml-3-0-27"
+immuneml_tools_version: "update-immuneml-3-0-27"
 immuneml_tools_source_dir: "/srv/galaxy/immuneml_tools_source"
 immuneml_tools_force_refresh: true
+
+# Leave unset unless you intentionally patch prod_macros.xml.
+# immuneml_setuptools_version: "<81"
 
 # ---------------------------------------------------------------------
 # immuneML Galaxy welcome/static assets
 # ---------------------------------------------------------------------
-
 immuneml_welcome_folder: "files"
 immuneml_welcome_html: "welcome_immuneml.html"
-
 
 # =====================================================================
 # Orchestration helper variables
@@ -92,7 +111,14 @@ galaxy_runtime_group_resolved: "{{ galaxy_user_name | default('galaxy') }}"
 # Galaxy Conda dependency resolver helpers
 # ---------------------------------------------------------------------
 galaxy_dependency_resolvers_conf: "{{ galaxy_config_dir_resolved }}/dependency_resolvers_conf.xml"
-galaxy_conda_prefix_resolved: "{{ miniconda_prefix | default(galaxy_root_resolved ~ '/mutable/dependencies/_conda') }}"
+
+galaxy_conda_prefix_resolved: >-
+  {{
+    conda_prefix
+    | default(miniconda_prefix)
+    | default(galaxy_root_resolved ~ '/mutable/dependencies/_conda')
+  }}
+
 galaxy_enable_conda_dependencies_resolved: "{{ galaxy_enable_conda_dependencies | default(true) | bool }}"
 
 # ---------------------------------------------------------------------
@@ -108,7 +134,6 @@ galaxy_tool_dir_resolved: "{{ galaxy_tool_dir | default(galaxy_server_dir_resolv
 galaxy_mutable_config_dir_resolved: "{{ galaxy_mutable_config_dir | default(galaxy_root_resolved ~ '/mutable/config') }}"
 
 galaxy_tool_conf: "{{ galaxy_config_dir_resolved }}/tool_conf.xml"
-galaxy_config_file: "{{ galaxy_config_file_resolved }}"
 galaxy_datatypes_conf: "{{ galaxy_config_dir_resolved }}/datatypes_conf.xml"
 galaxy_builtin_datatypes_conf: "{{ galaxy_server_dir_resolved }}/config/datatypes_conf.xml.sample"
 galaxy_static_dir_resolved: "{{ galaxy_server_dir_resolved }}/static"
@@ -123,7 +148,6 @@ immuneml_tools_force_refresh_resolved: "{{ immuneml_tools_force_refresh | defaul
 
 immuneml_tool_dir: "{{ galaxy_tool_dir_resolved }}/immuneml"
 immuneml_prod_macros_path: "{{ immuneml_tool_dir }}/prod_macros.xml"
-
 
 # ---------------------------------------------------------------------
 # immuneML welcome/static helper paths
@@ -150,6 +174,7 @@ galaxy_https_validate_certs: false
 # Galaxy branding configuration
 # ---------------------------------------------------------------------
 galaxy_brand: "ImmuneML"
+galaxy_page_title: "ImmuneML Galaxy"
 
 galaxy_brand_resolved: "{{ galaxy_brand | default('Galaxy') }}"
 galaxy_page_title_resolved: "{{ galaxy_page_title | default(galaxy_brand_resolved) }}"
@@ -158,5 +183,5 @@ galaxy_page_title_resolved: "{{ galaxy_page_title | default(galaxy_brand_resolve
 # Example:
 #   galaxy_favicon_ico_src: "files/favicon.ico"
 #   galaxy_favicon_svg_src: "files/favicon.svg"
-#galaxy_favicon_ico_src: "files/favicon.ico"
-#galaxy_favicon_svg_src: "files/favicon.svg"
+# galaxy_favicon_ico_src: "files/favicon.ico"
+# galaxy_favicon_svg_src: "files/favicon.svg"

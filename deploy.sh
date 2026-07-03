@@ -14,6 +14,8 @@ set -Eeuo pipefail
 # Important:
 #   Galaxy baseline deployment is handled inside immuneml.yml
 #   through the galaxy_deployment role.
+#   Play 1 and Play 2 always redeploy the Galaxy baseline unconditionally,
+#   regardless of the current Galaxy health state.
 #
 # immuneML integration:
 #   immuneML Galaxy tools are installed as Galaxy wrapper XML files.
@@ -204,7 +206,7 @@ deploy_remote() {
   generate_inventory
 
   step "Initiating ImmuneML Galaxy automation play run"
-  step "Galaxy baseline deployment is handled inside immuneml.yml through galaxy_deployment"
+  step "Galaxy baseline is always redeployed unconditionally (Play 1 + Play 2)"
   step "immuneML Galaxy tools use Conda/Bioconda through Galaxy dependency resolvers"
 
   # shellcheck disable=SC1091
@@ -217,7 +219,6 @@ deploy_remote() {
 
   success "ImmuneML Galaxy playbook run completed successfully ✅"
 }
-
 validate_remote() {
   load_config
   generate_inventory
@@ -230,12 +231,11 @@ validate_remote() {
   step "Checking Galaxy API endpoint"
 
   GALAXY_ENABLE_HTTPS=$(yq -r '.galaxy_enable_https // false' "$CONFIG_FILE")
-  GALAXY_HTTPS_VERIFY=$(yq -r '.galaxy_https_validate_certs // false' "$CONFIG_FILE")
 
   if [ "$GALAXY_ENABLE_HTTPS" = "true" ]; then
-    API_CHECK_CMD="curl -k -sf https://127.0.0.1/api/version"
+    API_CHECK_CMD="curl -sf http://127.0.0.1:8080/api/version || curl -sf http://localhost:8080/api/version || curl -k -sf https://127.0.0.1/api/version || curl -sf http://127.0.0.1/api/version"
   else
-    API_CHECK_CMD="curl -sf http://127.0.0.1/api/version"
+    API_CHECK_CMD="curl -sf http://127.0.0.1:8080/api/version || curl -sf http://localhost:8080/api/version || curl -sf http://127.0.0.1/api/version || curl -k -sf https://127.0.0.1/api/version"
   fi
 
   ansible galaxyservers -i "$INVENTORY_FILE" -m shell -a "$API_CHECK_CMD" \
@@ -253,16 +253,37 @@ validate_remote() {
   step "Checking immuneML Conda/Bioconda requirement declaration"
   ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
     "grep -RniEi '<requirement[^>]*type=\"package\"[^>]*>[[:space:]]*immuneml[[:space:]]*</requirement>' /srv/galaxy/server/tools/immuneml/*.xml /srv/galaxy/server/tools/immuneml/prod_macros.xml >/dev/null 2>&1" \
-    || error "immuneML wrappers do not declare a Galaxy package requirement for immuneML/Conda."
+    || error "immuneML wrappers do not declare a Galaxy package requirement for immuneml/Conda."
 
   success "immuneML Galaxy wrappers declare Conda/Bioconda package requirement ✅"
 
+  step "Checking setuptools compatibility declaration"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
+    "grep -RniEi '<requirement[^>]*type=\"package\"[^>]*version=\"(&lt81|<81)\"[^>]*>[[:space:]]*setuptools[[:space:]]*</requirement>' /srv/galaxy/server/tools/immuneml/prod_macros.xml >/dev/null 2>&1" \
+    || error "immuneML wrappers do not declare setuptools <81 compatibility requirement."
+
+  success "immuneML setuptools compatibility requirement exists ✅"
+
+  step "Checking wrappers do not use python3 helper execution"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
+    "if grep -Rni 'python3' /srv/galaxy/server/tools/immuneml/*.xml >/dev/null 2>&1; then exit 1; else exit 0; fi" \
+    || error "immuneML wrappers still use python3 for helper scripts. They should use python."
+
+  success "immuneML wrappers use Conda Python helper execution ✅"
+
   step "Checking Galaxy dependency resolver configuration"
   ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
-    "test -f /srv/galaxy/config/dependency_resolvers_conf.xml && grep -q '<conda' /srv/galaxy/config/dependency_resolvers_conf.xml" \
+    "test -f /srv/galaxy/config/dependency_resolvers_conf.xml && grep -q '<conda' /srv/galaxy/config/dependency_resolvers_conf.xml && grep -q '</dependency_resolvers>' /srv/galaxy/config/dependency_resolvers_conf.xml" \
     || error "Galaxy Conda dependency resolver config is missing or incomplete."
 
   success "Galaxy Conda dependency resolver config exists ✅"
+
+  step "Checking Galaxy service does not disable Conda plugins"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
+    "if grep -Rni 'CONDA_NO_PLUGINS=true' /etc/systemd/system/galaxy.service /etc/systemd/system/galaxy.service.d >/dev/null 2>&1; then exit 1; else exit 0; fi" \
+    || error "Galaxy systemd service disables Conda plugins with CONDA_NO_PLUGINS=true."
+
+  success "Galaxy service does not disable Conda plugins ✅"
 
   step "Checking immuneML datatype registration"
   ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
@@ -287,7 +308,6 @@ validate_remote() {
 
   success "Remote Galaxy and immuneML diagnostics completed ✅"
 }
-
 full_remote() {
   prepare_control_node
   install_roles
@@ -508,13 +528,113 @@ EOF
   warn "Next deployment will be a fresh install."
 }
 
+wipe_remote_galaxy_keep_database_and_datasets() {
+  load_config
+  generate_inventory
+
+  confirm_dangerous_action \
+    "WIPE_GALAXY_KEEP_DB_DATASETS_CLIENT" \
+    "This will remove Galaxy app/config/runtime state while keeping PostgreSQL data, datasets, and built client assets to avoid rebuilding the client." \
+    || return
+
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
+
+  local wipe_playbook
+  wipe_playbook="$(mktemp /tmp/immuneml-galaxy-wipe-keep-db.XXXXXX.yml)"
+
+  cat > "$wipe_playbook" <<'EOF'
+---
+- name: Wipe Galaxy app/runtime while preserving DB, datasets, and client
+  hosts: galaxyservers
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Stop Galaxy service
+      ansible.builtin.systemd:
+        name: galaxy
+        state: stopped
+      failed_when: false
+
+    - name: Stop nginx service
+      ansible.builtin.systemd:
+        name: nginx
+        state: stopped
+      failed_when: false
+
+    - name: Stop possible Galaxy child services
+      ansible.builtin.shell: |
+        systemctl stop galaxy-gunicorn || true
+        systemctl stop galaxy-celery || true
+        systemctl stop galaxy-celery-beat || true
+        pkill -f galaxy || true
+        pkill -f gunicorn || true
+        pkill -f celery || true
+      args:
+        executable: /bin/bash
+      failed_when: false
+      changed_when: false
+
+    - name: Remove runtime/config while preserving datasets and client static assets
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        galaxy_root="{{ galaxy_root_to_wipe }}"
+        server_dir="$galaxy_root/server"
+        mutable_dir="$galaxy_root/mutable"
+
+        if [ -z "$galaxy_root" ] || [ "$galaxy_root" = "/" ]; then
+          echo "Refusing to wipe unsafe Galaxy root: $galaxy_root"
+          exit 1
+        fi
+
+        mkdir -p "$galaxy_root"
+
+        # Remove top-level runtime/config directories that should be recreated.
+        rm -rf "$galaxy_root/config" "$galaxy_root/venv" "$galaxy_root/local_tools"
+
+        # Keep git metadata and static assets so redeploy can reuse existing client build.
+        if [ -d "$server_dir" ]; then
+          find "$server_dir" -mindepth 1 -maxdepth 1 \
+            ! -name '.git' \
+            ! -name 'static' \
+            -exec rm -rf -- {} +
+        fi
+
+        # Keep dataset files, wipe other mutable runtime state.
+        if [ -d "$mutable_dir" ]; then
+          find "$mutable_dir" -mindepth 1 -maxdepth 1 \
+            ! -name 'datasets' \
+            -exec rm -rf -- {} +
+        fi
+
+        chmod 0755 "$galaxy_root"
+      args:
+        executable: /bin/bash
+EOF
+
+  step "Wiping Galaxy app/runtime while preserving database, datasets, and client assets in ${GALAXY_ROOT}"
+  ansible-playbook -i "$INVENTORY_FILE" "$wipe_playbook" \
+    -e "galaxy_root_to_wipe=${GALAXY_ROOT}" \
+    || {
+      rm -f "$wipe_playbook"
+      error "Failed to complete selective Galaxy wipe in ${GALAXY_ROOT}"
+    }
+
+  rm -f "$wipe_playbook"
+
+  success "Selective Galaxy wipe completed; database, datasets, and client assets were preserved ✅"
+  warn "Run deployment to recreate runtime/config while reusing the preserved client build."
+}
+
 force_redeploy_galaxy() {
   load_config
   generate_inventory
 
-  warn "This will stop Galaxy and rerun the playbook."
+  warn "This will rerun the full playbook, which always redeploys the Galaxy baseline."
   warn "It will NOT delete Galaxy files, database, or datasets."
-  warn "Because Galaxy will be stopped, Play 1 should mark the baseline unhealthy and rerun galaxy_deployment."
+  warn "Galaxy baseline (Play 1 + Play 2) now redeploys unconditionally on every run."
 
   read -rp "Proceed with force redeploy? (y/n): " ans
   [[ "$ans" =~ ^[Yy]$ ]] || { step "Force redeploy aborted"; return; }
@@ -522,11 +642,7 @@ force_redeploy_galaxy() {
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
 
-  step "Stopping Galaxy service"
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m systemd -a \
-    "name=galaxy state=stopped" || true
-
-  step "Running ImmuneML Galaxy playbook after stopping Galaxy"
+  step "Running ImmuneML Galaxy playbook (Galaxy baseline always redeployed)"
   ansible-playbook \
     -i "$INVENTORY_FILE" \
     "$PLAYBOOK" \
@@ -553,7 +669,7 @@ menu() {
   echo "8)  Deploy Galaxy server and ImmuneML locally (Linux only)"
   echo "9)  Clean local development dependencies workspace"
   echo "10) Remove remote ImmuneML overlay tool only"
-  echo "11) Wipe Galaxy app/config/runtime but KEEP database and datasets"
+  echo "11) Wipe Galaxy app/config/runtime but KEEP database, datasets, and client"
   echo "12) Force redeploy Galaxy and ImmuneML"
   echo "13) DANGER: Wipe Galaxy, datasets, and Galaxy PostgreSQL database"
   echo "14) Exit"

@@ -34,7 +34,7 @@ Main files:
   Deployment configuration and helper variables.
 
 - `roles/galaxy_deployment`  
-  Baseline Galaxy deployment role, used when Galaxy is missing or unhealthy.
+  Baseline Galaxy deployment role. Always runs on every playbook execution (Play 2 is unconditional).
 
 - `files/`  
   Local welcome page and static Galaxy assets.
@@ -50,11 +50,11 @@ The playbook runs in four main stages.
 
 ---
 
-### 1. Baseline Health Check
+### 1. Baseline Status Check (diagnostic only)
 
-Checks whether Galaxy already exists and is healthy.
+Collects Galaxy state information for reporting purposes.
 
-It verifies:
+It checks:
 
 - Galaxy server directory
 - Galaxy config file
@@ -63,21 +63,15 @@ It verifies:
 - Galaxy API endpoint
 - PostgreSQL database connection config
 
-It then sets helper facts such as:
-
-```yaml
-galaxy_needs_baseline_attention
-```
-
-This controls whether the Galaxy baseline role should run.
+It then sets `galaxy_needs_baseline_attention: true` **unconditionally**, so the baseline role always runs regardless of the current Galaxy health state.
 
 ---
 
-### 2. Conditional Galaxy Baseline Deployment
+### 2. Galaxy Baseline Deployment (always runs)
 
-Runs the `galaxy_deployment` role only when Galaxy is missing, inactive, or unhealthy.
+Runs the `galaxy_deployment` role on **every execution**, unconditionally.
 
-If Galaxy is already healthy, the baseline deployment is skipped automatically.
+Galaxy baseline is always redeployed regardless of whether Galaxy is already running or healthy.
 
 ---
 
@@ -492,7 +486,7 @@ For production or larger tests, provision enough disk space and mount it at:
 ## Notes
 
 - The playbook avoids direct edits to Galaxy core source.
-- Galaxy baseline deployment is skipped automatically when Galaxy is already healthy.
+- Galaxy baseline deployment always runs unconditionally on every playbook execution (Play 1 + Play 2).
 - immuneML Galaxy tools use Galaxy-native Conda/Bioconda dependency resolution.
 - The welcome page and static assets are copied from the local `files/` directory.
 - The tool menu is managed through `tool_conf.xml`.

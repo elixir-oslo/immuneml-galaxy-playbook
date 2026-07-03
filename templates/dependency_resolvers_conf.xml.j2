@@ -1,10 +1,20 @@
 <?xml version="1.0"?>
 <dependency_resolvers>
-    <tool_shed_packages />
-    <galaxy_packages />
     <conda
             prefix="{{ galaxy_conda_prefix_resolved }}"
-            channels="bioconda,conda-forge,defaults"
+            conda_exec="{{ galaxy_conda_prefix_resolved }}/bin/conda"
+            channels="conda-forge,bioconda,defaults"
             auto_init="true"
             auto_install="true" />
+
+    <conda
+            versionless="true"
+            prefix="{{ galaxy_conda_prefix_resolved }}"
+            conda_exec="{{ galaxy_conda_prefix_resolved }}/bin/conda"
+            channels="conda-forge,bioconda,defaults"
+            auto_init="true"
+            auto_install="true" />
+
+    <tool_shed_packages />
+    <galaxy_packages />
 </dependency_resolvers>
