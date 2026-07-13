@@ -17,12 +17,11 @@ This repository provides an orchestration layer on top of the baseline Galaxy de
 │   └── galaxy_deployment/
 ├── files/
 │   ├── welcome_immuneml.html
-│   ├── favicon.ico
-│   └── favicon.svg
+│   └── welcome_immuneml_files/
 └── templates/
     ├── dependency_resolvers_conf.xml.j2
     ├── tool_conf_empty.xml.j2
-    └── immuneml_toolbox_block.j2
+    └── immuneml_toolbox_block.xml.j2
 ```
 
 Main files:
@@ -34,7 +33,7 @@ Main files:
   Deployment configuration and helper variables.
 
 - `roles/galaxy_deployment`  
-  Baseline Galaxy deployment role. Always runs on every playbook execution (Play 2 is unconditional).
+  Baseline Galaxy deployment role. Always runs on every playbook execution (Play 3 is unconditional).
 
 - `files/`  
   Local welcome page and static Galaxy assets.
@@ -46,7 +45,7 @@ Main files:
 
 ## What `immuneml.yml` Does
 
-The playbook runs in four main stages.
+The playbook runs in five plays.
 
 ---
 
@@ -67,7 +66,13 @@ It then sets `galaxy_needs_baseline_attention: true` **unconditionally**, so the
 
 ---
 
-### 2. Galaxy Baseline Deployment (always runs)
+### 2. Bootstrap Minimal Galaxy Config
+
+Ensures the Galaxy config directory exists and creates a minimal `tool_conf.xml` if missing.
+
+---
+
+### 3. Galaxy Baseline Deployment (always runs)
 
 Runs the `galaxy_deployment` role on **every execution**, unconditionally.
 
@@ -75,7 +80,7 @@ Galaxy baseline is always redeployed regardless of whether Galaxy is already run
 
 ---
 
-### 3. ImmuneML Runtime Strategy Configuration
+### 4. ImmuneML Runtime Strategy Configuration
 
 Configures Galaxy to use immuneML through Galaxy-native Conda/Bioconda dependency resolution.
 
@@ -111,18 +116,14 @@ templates/dependency_resolvers_conf.xml.j2
 
 ---
 
-### 4. ImmuneML Tool and UI Registration
+### 5. ImmuneML Tool and UI Registration
 
 Registers immuneML tools and UI assets in Galaxy.
 
 This stage:
 
 - Clones and installs official immuneML Galaxy wrappers.
-- Pins a compatible `setuptools` requirement through:
-
-```yaml
-immuneml_setuptools_version: "80.9.0"
-```
+- Uses wrapper-defined Conda requirements from the immuneML tools repository.
 
 - Registers immuneML tools in `tool_conf.xml`.
 - Registers `yaml`, `yml`, and immuneML receptor datatypes in `datatypes_conf.xml`.
@@ -221,7 +222,7 @@ The playbook intentionally avoids installing immuneML with `pip` inside Galaxy t
 
 ```yaml
 immuneml_tools_repo_url: "https://github.com/uio-bmi/immuneml_tools.git"
-immuneml_tools_version: "main"
+immuneml_tools_version: "update-immuneml-3-0-27"
 immuneml_tools_source_dir: "/srv/galaxy/immuneml_tools_source"
 immuneml_tools_force_refresh: true
 ```
@@ -231,10 +232,11 @@ immuneml_tools_force_refresh: true
 ### ImmuneML Wrapper Compatibility
 
 ```yaml
-immuneml_setuptools_version: "80.9.0"
+# Leave unset unless you intentionally patch prod_macros.xml.
+# immuneml_setuptools_version: "<81"
 ```
 
-This is used because immuneML currently imports `pkg_resources`, which is provided by `setuptools`.
+By default, wrapper dependency compatibility is taken from the wrapper repo (`prod_macros.xml`).
 
 ---
 
@@ -258,8 +260,14 @@ Example expected files:
 ```text
 files/
 ├── welcome_immuneml.html
-├── favicon.ico
-└── favicon.svg
+└── welcome_immuneml_files/
+```
+
+Optional favicon overrides can be configured via:
+
+```yaml
+# galaxy_favicon_ico_src: "files/favicon.ico"
+# galaxy_favicon_svg_src: "files/favicon.svg"
 ```
 
 ---
@@ -308,7 +316,7 @@ Current templates:
 ```text
 templates/dependency_resolvers_conf.xml.j2
 templates/tool_conf_empty.xml.j2
-templates/immuneml_toolbox_block.j2
+templates/immuneml_toolbox_block.xml.j2
 ```
 
 ### `dependency_resolvers_conf.xml.j2`
@@ -319,7 +327,7 @@ Renders Galaxy Conda dependency resolver configuration.
 
 Creates a minimal Galaxy toolbox config if one does not exist.
 
-### `immuneml_toolbox_block.j2`
+### `immuneml_toolbox_block.xml.j2`
 
 Defines the immuneML tool menu sections inserted into Galaxy `tool_conf.xml`.
 
@@ -328,6 +336,8 @@ Defines the immuneML tool menu sections inserted into Galaxy `tool_conf.xml`.
 ## Quick Start
 
 ### 1. Prepare inventory
+
+If you use `./deploy.sh`, this step is optional because the script generates `hosts` from `group_vars/galaxyservers.yml` automatically.
 
 Create or update:
 
@@ -486,7 +496,7 @@ For production or larger tests, provision enough disk space and mount it at:
 ## Notes
 
 - The playbook avoids direct edits to Galaxy core source.
-- Galaxy baseline deployment always runs unconditionally on every playbook execution (Play 1 + Play 2).
+- Galaxy baseline deployment always runs unconditionally on every playbook execution (Play 3).
 - immuneML Galaxy tools use Galaxy-native Conda/Bioconda dependency resolution.
 - The welcome page and static assets are copied from the local `files/` directory.
 - The tool menu is managed through `tool_conf.xml`.
@@ -496,4 +506,4 @@ For production or larger tests, provision enough disk space and mount it at:
 
 ## License
 
-Add project license information here.
+This project is licensed under the Apache License 2.0. See `LICENSE`.
