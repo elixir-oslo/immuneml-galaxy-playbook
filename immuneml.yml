@@ -355,46 +355,46 @@
     # Datatype support for immuneML files
     # ------------------------------------------------------------------
 
-#    - name: Create managed Galaxy datatypes_conf.xml from Galaxy sample
-#      ansible.builtin.copy:
-#        src: "{{ galaxy_server_dir_resolved }}/config/datatypes_conf.xml.sample"
-#        dest: "{{ galaxy_datatypes_conf }}"
-#        remote_src: true
-#        owner: "{{ galaxy_runtime_user_resolved }}"
-#        group: "{{ galaxy_runtime_group_resolved }}"
-#        mode: "0644"
-#        force: true
+    - name: Create managed Galaxy datatypes_conf.xml from Galaxy sample
+      ansible.builtin.copy:
+        src: "{{ galaxy_server_dir_resolved }}/config/datatypes_conf.xml.sample"
+        dest: "{{ galaxy_datatypes_conf }}"
+        remote_src: true
+        owner: "{{ galaxy_runtime_user_resolved }}"
+        group: "{{ galaxy_runtime_group_resolved }}"
+        mode: "0644"
+        force: false
 #
-#    - name: Register immuneML and YAML datatypes
-#      ansible.builtin.blockinfile:
-#        path: "{{ galaxy_datatypes_conf }}"
-#        marker: "<!-- {mark} immuneML datatypes managed by Ansible -->"
-#        insertbefore: "</registration>"
-#        block: |
-#          <datatype extension="yaml" type="galaxy.datatypes.text:Text" subclass="True" display_in_upload="true"/>
-#          <datatype extension="yml" type="galaxy.datatypes.text:Text" subclass="True" display_in_upload="true"/>
-#          <datatype extension="immuneml_receptors" type="galaxy.datatypes.text:Html" subclass="True"/>
-#          <datatype extension="immuneml_receptors.html" type="galaxy.datatypes.text:Html" subclass="True"/>
-#
-#    - name: Ensure Galaxy uses managed datatypes_conf.xml
-#      ansible.builtin.lineinfile:
-#        path: "{{ galaxy_config_file_resolved }}"
-#        regexp: '^\s*datatypes_config_file:.*$'
-#        line: "    datatypes_config_file: {{ galaxy_datatypes_conf }}"
-#        insertafter: '^galaxy:\s*$'
-#        backup: true
-#
-#    - name: Validate managed Galaxy datatypes XML
-#      ansible.builtin.shell: |
-#        set -e
-#        python3 - <<'PY'
-#        import xml.etree.ElementTree as ET
-#        ET.parse("{{ galaxy_datatypes_conf }}")
-#        print("datatypes_conf.xml is valid")
-#        PY
-#      args:
-#        executable: /bin/bash
-#      changed_when: false
+    - name: Register immuneML and YAML datatypes
+      ansible.builtin.blockinfile:
+        path: "{{ galaxy_datatypes_conf }}"
+        marker: "<!-- {mark} immuneML datatypes managed by Ansible -->"
+        insertbefore: "</registration>"
+        block: |
+          <datatype extension="yaml" type="galaxy.datatypes.text:Text" subclass="True" display_in_upload="true"/>
+          <datatype extension="yml" type="galaxy.datatypes.text:Text" subclass="True" display_in_upload="true"/>
+          <datatype extension="immuneml_receptors" type="galaxy.datatypes.text:Html" subclass="True"/>
+          <datatype extension="immuneml_receptors.html" type="galaxy.datatypes.text:Html" subclass="True"/>
+
+    - name: Ensure Galaxy uses managed datatypes_conf.xml
+      ansible.builtin.lineinfile:
+        path: "{{ galaxy_config_file_resolved }}"
+        regexp: '^\s*datatypes_config_file:.*$'
+        line: "    datatypes_config_file: {{ galaxy_datatypes_conf }}"
+        insertafter: '^galaxy:\s*$'
+        backup: true
+
+    - name: Validate managed Galaxy datatypes XML
+      ansible.builtin.shell: |
+        set -e
+        python3 - <<'PY'
+        import xml.etree.ElementTree as ET
+        ET.parse("{{ galaxy_datatypes_conf }}")
+        print("datatypes_conf.xml is valid")
+        PY
+      args:
+        executable: /bin/bash
+      changed_when: false
 
     # ------------------------------------------------------------------
     # Make immuneML wrappers tolerant of Galaxy's generic "data" datatype
