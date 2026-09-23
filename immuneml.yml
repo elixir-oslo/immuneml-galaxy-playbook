@@ -583,6 +583,14 @@
         insertbefore: "</toolbox>"
         block: "{{ lookup('ansible.builtin.template', 'templates/immuneml_toolbox_block.xml.j2') }}"
 
+    - name: Remove Galaxy converter section from tool_conf.xml
+      ansible.builtin.replace:
+        path: "{{ galaxy_tool_conf }}"
+        regexp: '(?s)<section[^>]*(id|name)="[^"]*(Convert|convert|converter)[^"]*".*?</section>'
+        replace: ''
+      failed_when: false
+
+
     - name: Ensure Galaxy uses managed tool_conf.xml
       ansible.builtin.lineinfile:
         path: "{{ galaxy_config_file_resolved }}"
@@ -645,6 +653,8 @@
         path: "{{ galaxy_mutable_config_dir_resolved }}/integrated_tool_panel.xml"
         state: absent
       failed_when: false
+
+
 
     - name: Check local immuneML welcome HTML file exists
       ansible.builtin.stat:
