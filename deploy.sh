@@ -170,7 +170,10 @@ prepare_control_node() {
   source "$VENV_DIR/bin/activate"
 
   pip install --upgrade pip setuptools wheel
-  pip install ansible yq
+  pip install \
+     "ansible==10.7.0" \
+     "ansible-core==2.17.13" \
+     yq
 
   success "Control node operational dependencies established ✅"
 }

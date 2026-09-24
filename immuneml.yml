@@ -48,12 +48,12 @@
 
     - name: Check Galaxy API endpoint
       ansible.builtin.command:
-        cmd: "curl -sf http://127.0.0.1/api/version"
+        cmd: "curl -sf http://127.0.0.1:8080/api/version"
       register: galaxy_api_status
       changed_when: false
       failed_when: false
 
-    - name: Check Galaxy PostgreSQL database_connection
+    - name: Check Galaxy PostgreSQL database connection
       ansible.builtin.command:
         cmd: "grep -nE '^\\s*database_connection:\\s*postgresql://' {{ galaxy_config_file_resolved }}"
       register: galaxy_database_connection_status
@@ -78,10 +78,7 @@
             galaxy_service_active_status.rc == 0
             and galaxy_service_active_status.stdout == "active"
           }}
-        galaxy_api_responding: >-
-          {{
-            galaxy_api_status.rc == 0
-          }}
+        galaxy_api_responding: "{{ galaxy_api_status.rc == 0 }}"
         galaxy_postgresql_configured: >-
           {{
             galaxy_config_file_status.stat.exists
@@ -91,7 +88,15 @@
 
     - name: Set Galaxy baseline attention flag
       ansible.builtin.set_fact:
-        galaxy_needs_baseline_attention: true
+        galaxy_needs_baseline_attention: >-
+          {{
+            not (
+              galaxy_baseline_deployed | bool
+              and galaxy_service_running | bool
+              and galaxy_api_responding | bool
+              and galaxy_postgresql_configured | bool
+            )
+          }}
 
     - name: Report Galaxy baseline status
       ansible.builtin.debug:
@@ -101,14 +106,6 @@
           - "Galaxy service running = {{ galaxy_service_running }}"
           - "Galaxy API responding = {{ galaxy_api_responding }}"
           - "Galaxy PostgreSQL configured = {{ galaxy_postgresql_configured }}"
-          - "server_dir={{ galaxy_server_dir_resolved_status.stat.exists }}"
-          - "run_script={{ galaxy_run_script_status.stat.exists }}"
-          - "python_package={{ galaxy_python_package_status.stat.exists }}"
-          - "config_file={{ galaxy_config_file_status.stat.exists }}"
-          - "service_unit_rc={{ galaxy_service_unit_status.rc }}"
-          - "service_active={{ galaxy_service_active_status.stdout | default('unknown') }}"
-          - "api_rc={{ galaxy_api_status.rc }}"
-          - "database_connection={{ galaxy_database_connection_status.stdout | default('missing') }}"
 
 # ------------------------------------------------------------------------
 # PLAY 2: Bootstrap minimal Galaxy config before baseline role
@@ -132,7 +129,7 @@
         group: root
         mode: "0755"
 
-    - name: Create minimal Galaxy tool_conf.xml before baseline role if missing
+    - name: Create minimal Galaxy tool config before baseline role if missing
       ansible.builtin.copy:
         dest: "{{ galaxy_tool_conf }}"
         owner: root
@@ -163,7 +160,6 @@
       - "{{ galaxy_config_dir_resolved }}/tool_conf.xml"
 
     galaxy_shed_tool_conf_file: "{{ galaxy_config_dir_resolved }}/shed_tool_conf.xml"
-
     __galaxy_mutable_config_dir: "{{ galaxy_config_dir_resolved }}"
 
     galaxy_dirs:
@@ -177,7 +173,7 @@
       - "{{ galaxy_log_dir }}"
 
   tasks:
-    - name: Run galaxy_deployment role
+    - name: Run galaxy deployment role
       ansible.builtin.include_role:
         name: galaxy_deployment
 
@@ -195,7 +191,6 @@
         msg:
           - "immuneML runtime strategy = {{ immuneml_runtime_strategy_resolved }}"
           - "Galaxy tools will use Conda/Bioconda through wrapper requirements."
-          - "Standalone pip CLI runtime enabled = {{ immuneml_cli_runtime_enabled_resolved }}"
           - "Galaxy Conda prefix = {{ galaxy_conda_prefix_resolved }}"
           - "Dependency resolver config = {{ galaxy_dependency_resolvers_conf }}"
 
@@ -219,48 +214,49 @@
 
     - name: Ensure Galaxy dependency resolver config exists
       ansible.builtin.template:
-        src: templates/dependency_resolvers_conf.xml.j2
+        src: "{{ playbook_dir }}/templates/dependency_resolvers_conf.xml.j2"
         dest: "{{ galaxy_dependency_resolvers_conf }}"
         owner: "{{ galaxy_runtime_user_resolved }}"
         group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0644"
-      register: galaxy_dependency_resolver_template_result
       when: galaxy_enable_conda_dependencies_resolved
 
-    - name: Ensure Galaxy uses dependency_resolvers_conf.xml
+    - name: Ensure Galaxy uses dependency resolver config
       ansible.builtin.lineinfile:
         path: "{{ galaxy_config_file_resolved }}"
-        regexp: "^    dependency_resolvers_config_file:"
+        regexp: '^\s*dependency_resolvers_config_file:.*$'
         line: "    dependency_resolvers_config_file: {{ galaxy_dependency_resolvers_conf }}"
-        insertafter: "^galaxy:"
+        insertafter: '^galaxy:\s*$'
         backup: true
       when: galaxy_enable_conda_dependencies_resolved
 
-    - name: Ensure Galaxy Conda settings are present after immuneML resolver setup
+    - name: Ensure Galaxy runtime settings are present
       ansible.builtin.lineinfile:
         path: "{{ galaxy_config_file_resolved }}"
-        regexp: "^    {{ item.key }}:"
+        regexp: "^\\s*{{ item.key }}:.*$"
         line: "    {{ item.key }}: {{ item.value }}"
-        insertafter: "^galaxy:"
+        insertafter: '^galaxy:\s*$'
         backup: true
       loop:
-        - key: "conda_auto_init"
+        - key: conda_auto_init
           value: "true"
-        - key: "conda_auto_install"
+        - key: conda_auto_install
           value: "true"
-        - key: "conda_prefix"
+        - key: conda_prefix
           value: "{{ galaxy_conda_prefix_resolved }}"
-        - key: "conda_solver"
+        - key: conda_solver
           value: "classic"
+        - key: display_builtin_converters
+          value: "false"
       when: galaxy_enable_conda_dependencies_resolved
 
-    - name: Validate Galaxy YAML after immuneML Conda config
+    - name: Validate Galaxy YAML after runtime configuration
       ansible.builtin.shell: |
         set -e
         /srv/galaxy/venv/bin/python - <<'PY'
         import yaml
-        with open("{{ galaxy_config_file_resolved }}") as f:
-            yaml.safe_load(f)
+        with open("{{ galaxy_config_file_resolved }}", encoding="utf-8") as handle:
+            yaml.safe_load(handle)
         print("galaxy.yml is valid")
         PY
       args:
@@ -275,12 +271,12 @@
       changed_when: false
       when: galaxy_enable_conda_dependencies_resolved
 
-    - name: Report Galaxy Conda dependency resolver
-      ansible.builtin.debug:
-        msg:
-          - "Galaxy Conda dependency resolver is configured."
-          - "{{ galaxy_conda_resolver_check.stdout | default('Conda resolver check skipped') }}"
-      when: galaxy_enable_conda_dependencies_resolved
+    - name: Verify built-in converter panel is disabled
+      ansible.builtin.command:
+        cmd: >-
+          grep -nE '^\s*display_builtin_converters:\s*false\s*$'
+          {{ galaxy_config_file_resolved }}
+      changed_when: false
 
 # ------------------------------------------------------------------------
 # PLAY 5: Register official immuneML Galaxy tools menu
@@ -294,12 +290,10 @@
     - name: Announce immuneML Galaxy tool registration
       ansible.builtin.debug:
         msg:
-          - "Registering official immuneML Galaxy tools menu."
           - "Tool source repo: {{ immuneml_tools_repo_resolved }}"
           - "Tool source version: {{ immuneml_tools_version_resolved }}"
-          - "Tool source directory: {{ immuneml_tools_source_dir_resolved }}"
           - "Galaxy tool directory: {{ immuneml_tool_dir }}"
-          - "Galaxy tool_conf.xml: {{ galaxy_tool_conf }}"
+          - "Galaxy tool config: {{ galaxy_tool_conf }}"
 
     - name: Ensure git is installed
       ansible.builtin.apt:
@@ -307,7 +301,7 @@
         state: present
         update_cache: true
 
-    - name: Ensure immuneML Galaxy tools source parent directory exists
+    - name: Ensure immuneML tool source parent directory exists
       ansible.builtin.file:
         path: "{{ immuneml_tools_source_dir_resolved | dirname }}"
         state: directory
@@ -315,7 +309,7 @@
         group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0755"
 
-    - name: Remove existing immuneML Galaxy tools source checkout before refresh
+    - name: Remove existing immuneML tool source before refresh
       ansible.builtin.file:
         path: "{{ immuneml_tools_source_dir_resolved }}"
         state: absent
@@ -330,7 +324,7 @@
         update: true
       become_user: "{{ galaxy_runtime_user_resolved }}"
 
-    - name: Remove old immuneML Galaxy tool directory before installing wrappers
+    - name: Remove old immuneML Galaxy tool directory
       ansible.builtin.file:
         path: "{{ immuneml_tool_dir }}"
         state: absent
@@ -343,7 +337,7 @@
         group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0755"
 
-    - name: Copy official immuneML Galaxy tools into Galaxy tools directory
+    - name: Copy official immuneML tools into Galaxy
       ansible.builtin.copy:
         src: "{{ immuneml_tools_source_dir_resolved }}/"
         dest: "{{ immuneml_tool_dir }}/"
@@ -351,11 +345,20 @@
         owner: "{{ galaxy_runtime_user_resolved }}"
         group: "{{ galaxy_runtime_group_resolved }}"
         mode: preserve
-    # ------------------------------------------------------------------
-    # Datatype support for immuneML files
-    # ------------------------------------------------------------------
 
-    - name: Create managed Galaxy datatypes_conf.xml from Galaxy sample
+    - name: Check whether immuneML YAML wrapper exists
+      ansible.builtin.stat:
+        path: "{{ immuneml_tool_dir }}/immuneml_yaml.xml"
+      register: immuneml_yaml_wrapper_status
+
+    - name: Allow YAML runner to accept txt yaml and yml datatypes
+      ansible.builtin.replace:
+        path: "{{ immuneml_tool_dir }}/immuneml_yaml.xml"
+        regexp: 'format="txt"'
+        replace: 'format="txt,yaml,yml"'
+      when: immuneml_yaml_wrapper_status.stat.exists
+
+    - name: Create managed Galaxy datatypes config from Galaxy sample
       ansible.builtin.copy:
         src: "{{ galaxy_server_dir_resolved }}/config/datatypes_conf.xml.sample"
         dest: "{{ galaxy_datatypes_conf }}"
@@ -364,7 +367,7 @@
         group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0644"
         force: false
-#
+
     - name: Register immuneML and YAML datatypes
       ansible.builtin.blockinfile:
         path: "{{ galaxy_datatypes_conf }}"
@@ -376,7 +379,7 @@
           <datatype extension="immuneml_receptors" type="galaxy.datatypes.text:Html" subclass="True"/>
           <datatype extension="immuneml_receptors.html" type="galaxy.datatypes.text:Html" subclass="True"/>
 
-    - name: Ensure Galaxy uses managed datatypes_conf.xml
+    - name: Ensure Galaxy uses managed datatypes config
       ansible.builtin.lineinfile:
         path: "{{ galaxy_config_file_resolved }}"
         regexp: '^\s*datatypes_config_file:.*$'
@@ -395,125 +398,6 @@
       args:
         executable: /bin/bash
       changed_when: false
-
-    # ------------------------------------------------------------------
-    # Make immuneML wrappers tolerant of Galaxy's generic "data" datatype
-    # ------------------------------------------------------------------
-
-#    - name: Patch immuneML wrappers to accept data datatype for supported text-like inputs
-#      ansible.builtin.shell: |
-#        set -euo pipefail
-#
-#        python3 - <<'PY'
-#        from pathlib import Path
-#        import re
-#
-#        tool_dir = Path("{{ immuneml_tool_dir }}")
-#
-#        # Galaxy may upload YAML, TSV, CSV, or TXT files as generic "data".
-#        # We only patch <param ... format="..."> lines, not output formats.
-#        text_like_formats = {
-#            "txt",
-#            "yaml",
-#            "yml",
-#            "csv",
-#            "tsv",
-#            "tabular",
-#            "immuneml_receptors",
-#            "immuneml_receptors.html",
-#            "html",
-#        }
-#
-#        def patch_format_value(value):
-#            parts = [x.strip() for x in value.split(",") if x.strip()]
-#            if not parts:
-#                return value
-#
-#            if text_like_formats.intersection(parts):
-#                new_parts = []
-#                for item in ["data"] + parts:
-#                    if item not in new_parts:
-#                        new_parts.append(item)
-#                return ",".join(new_parts)
-#
-#            return value
-#
-#        for wrapper in tool_dir.glob("*.xml"):
-#            text = wrapper.read_text()
-#            lines = []
-#
-#            for line in text.splitlines():
-#                if "<param " in line and 'format="' in line:
-#                    line = re.sub(
-#                        r'format="([^"]+)"',
-#                        lambda m: f'format="{patch_format_value(m.group(1))}"',
-#                        line,
-#                    )
-#                lines.append(line)
-#
-#            wrapper.write_text("\n".join(lines) + "\n")
-#
-#        print("immuneML wrapper input formats patched")
-#        PY
-#      args:
-#        executable: /bin/bash
-#      changed_when: false
-#
-#    - name: Show patched immuneML wrapper input formats
-#      ansible.builtin.command:
-#        cmd: "grep -RniE '<param .*format=' {{ immuneml_tool_dir }}"
-#      register: immuneml_patched_param_formats
-#      changed_when: false
-#      failed_when: false
-#
-#    - name: Report patched immuneML wrapper input formats
-#      ansible.builtin.debug:
-#        msg: "{{ immuneml_patched_param_formats.stdout_lines | default([]) }}"
-
-    #------------------------------------------------------------------
-
-    - name: Check whether immuneML YAML wrapper exists
-      ansible.builtin.stat:
-        path: "{{ immuneml_tool_dir }}/immuneml_yaml.xml"
-      register: immuneml_yaml_wrapper_status
-
-    - name: Allow YAML runner to accept txt, yaml, and yml Galaxy datatypes
-      ansible.builtin.replace:
-        path: "{{ immuneml_tool_dir }}/immuneml_yaml.xml"
-        regexp: 'format="[^"]*"'
-        replace: 'format="txt,yaml,yml"'
-      when: immuneml_yaml_wrapper_status.stat.exists
-
-#    - name: Allow YAML runner to accept txt, yaml, and yml Galaxy datatypes
-#      ansible.builtin.replace:
-#        path: "{{ immuneml_tool_dir }}/immuneml_yaml.xml"
-#        regexp: 'format="txt"'
-#        replace: 'format="txt,yaml,yml"'
-#      when: immuneml_yaml_wrapper_status.stat.exists
-
-    - name: Check whether immuneML prod_macros.xml exists
-      ansible.builtin.stat:
-        path: "{{ immuneml_prod_macros_path }}"
-      register: immuneml_prod_macros_status
-
-    - name: Show immuneML prod_macros.xml version and requirement lines if present
-      ansible.builtin.command:
-        cmd: "grep -nE 'VERSION|requirement.*immuneml|requirement.*immuneML|requirement.*setuptools|requirement.*python' {{ immuneml_prod_macros_path }}"
-      register: immuneml_prod_macros_version_lines
-      changed_when: false
-      failed_when: false
-      when: immuneml_prod_macros_status.stat.exists
-
-    - name: Report immuneML prod_macros.xml version and requirement lines
-      ansible.builtin.debug:
-        msg: "{{ immuneml_prod_macros_version_lines.stdout_lines | default(['prod_macros.xml not present or no version lines found']) }}"
-
-    - name: Find immuneML Galaxy XML tool wrappers
-      ansible.builtin.find:
-        paths: "{{ immuneml_tool_dir }}"
-        patterns: "*.xml"
-        file_type: file
-        recurse: true
 
     - name: Find immuneML Galaxy XML tool wrappers
       ansible.builtin.find:
@@ -537,18 +421,12 @@
             | sort
           }}
 
-    - name: Report immuneML Galaxy tool wrappers found
-      ansible.builtin.debug:
-        msg:
-          - "Found immuneML Galaxy wrappers:"
-          - "{{ immuneml_tool_xml_files }}"
-
-    - name: Fail if no immuneML Galaxy XML wrappers were found
+    - name: Fail if no immuneML tool wrappers were found
       ansible.builtin.fail:
         msg: "No immuneML Galaxy XML wrappers were found in {{ immuneml_tool_dir }}"
       when: immuneml_tool_xml_files | length == 0
 
-    - name: Ensure Galaxy tool_conf.xml exists
+    - name: Ensure Galaxy tool config exists
       ansible.builtin.copy:
         dest: "{{ galaxy_tool_conf }}"
         content: |
@@ -560,91 +438,18 @@
         mode: "0644"
         force: false
 
-    - name: Ensure datatypes_conf.xml exists
-      ansible.builtin.copy:
-        dest: "{{ galaxy_datatypes_conf }}"
-        content: |
-          <?xml version="1.0"?>
-          <datatypes>
-            <registration>
-            </registration>
-            <sniffers>
-            </sniffers>
-          </datatypes>
-        owner: "{{ galaxy_runtime_user_resolved }}"
-        group: "{{ galaxy_runtime_group_resolved }}"
-        mode: "0644"
-        force: false
-
     - name: Register immuneML tools in Galaxy toolbox
       ansible.builtin.blockinfile:
         path: "{{ galaxy_tool_conf }}"
         marker: "<!-- {mark} immuneML tools managed by Ansible -->"
         insertbefore: "</toolbox>"
-        block: "{{ lookup('ansible.builtin.template', 'templates/immuneml_toolbox_block.xml.j2') }}"
+        block: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/templates/immuneml_toolbox_block.xml.j2') }}"
 
-    - name: Remove Galaxy converter section from tool_conf.xml
-      ansible.builtin.replace:
-        path: "{{ galaxy_tool_conf }}"
-        regexp: '(?s)<section[^>]*(id|name)="[^"]*(Convert|convert|converter)[^"]*".*?</section>'
-        replace: ''
-      failed_when: false
-
-
-    - name: Ensure Galaxy uses managed tool_conf.xml
+    - name: Ensure Galaxy uses managed tool config
       ansible.builtin.lineinfile:
         path: "{{ galaxy_config_file_resolved }}"
         regexp: '^\s*tool_config_file:.*$'
         line: "    tool_config_file: {{ galaxy_tool_conf }}"
-        insertafter: '^galaxy:\s*$'
-        backup: true
-
-    - name: Check whether yaml datatype is already registered
-      ansible.builtin.command:
-        cmd: "grep -q 'extension=\"yaml\"' {{ galaxy_datatypes_conf }}"
-      register: galaxy_yaml_datatype_check
-      changed_when: false
-      failed_when: false
-
-    - name: Check whether yml datatype is already registered
-      ansible.builtin.command:
-        cmd: "grep -q 'extension=\"yml\"' {{ galaxy_datatypes_conf }}"
-      register: galaxy_yml_datatype_check
-      changed_when: false
-      failed_when: false
-
-    - name: Register yaml datatype if missing
-      ansible.builtin.blockinfile:
-        path: "{{ galaxy_datatypes_conf }}"
-        marker: "<!-- {mark} YAML datatype managed by Ansible -->"
-        insertbefore: "</registration>"
-        block: |
-          <datatype extension="yaml" type="galaxy.datatypes.text:Text" subclass="True"/>
-      when: galaxy_yaml_datatype_check.rc != 0
-
-    - name: Register yml datatype if missing
-      ansible.builtin.blockinfile:
-        path: "{{ galaxy_datatypes_conf }}"
-        marker: "<!-- {mark} YML datatype managed by Ansible -->"
-        insertbefore: "</registration>"
-        block: |
-          <datatype extension="yml" type="galaxy.datatypes.text:Text" subclass="True"/>
-      when: galaxy_yml_datatype_check.rc != 0
-
-    - name: Register immuneML receptor datatypes
-      ansible.builtin.blockinfile:
-        path: "{{ galaxy_datatypes_conf }}"
-        marker: "<!-- {mark} immuneML datatypes managed by Ansible -->"
-        insertbefore: "</registration>"
-        block: |
-          <datatype extension="immuneml_receptors" type="galaxy.datatypes.text:Html" subclass="True"/>
-          <datatype extension="immuneml_receptors.html" type="galaxy.datatypes.text:Html" subclass="True"/>
-
-    - name: Ensure Galaxy uses managed datatypes_conf.xml
-      ansible.builtin.lineinfile:
-        path: "{{ galaxy_config_file_resolved }}"
-        regexp: '^\s*datatypes_config_file:.*$'
-        line: "    datatypes_config_file: {{ galaxy_datatypes_conf }}"
         insertafter: '^galaxy:\s*$'
         backup: true
 
@@ -654,19 +459,17 @@
         state: absent
       failed_when: false
 
-
-
-    - name: Check local immuneML welcome HTML file exists
+    - name: Check local immuneML welcome page exists
       ansible.builtin.stat:
         path: "{{ immuneml_welcome_folder_resolved }}/{{ immuneml_welcome_html_resolved }}"
       register: immuneml_local_welcome_html_status
       delegate_to: localhost
       become: false
 
-    - name: Fail if local immuneML welcome HTML file is missing
+    - name: Fail if local immuneML welcome page is missing
       ansible.builtin.fail:
         msg: >-
-          Local welcome HTML file was not found at
+          Local welcome page was not found at
           {{ immuneml_welcome_folder_resolved }}/{{ immuneml_welcome_html_resolved }}.
       when: not immuneml_local_welcome_html_status.stat.exists
 
@@ -678,7 +481,7 @@
         group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0755"
 
-    - name: Copy local immuneML welcome/static assets into Galaxy static directory
+    - name: Copy local immuneML welcome assets into Galaxy static directory
       ansible.builtin.copy:
         src: "{{ immuneml_welcome_folder_resolved }}/"
         dest: "{{ galaxy_static_dir_resolved }}/"
@@ -686,26 +489,13 @@
         group: "{{ galaxy_runtime_group_resolved }}"
         mode: preserve
 
-    - name: Check immuneML welcome page exists in Galaxy static directory
-      ansible.builtin.stat:
-        path: "{{ galaxy_static_dir_resolved }}/{{ immuneml_welcome_html_resolved }}"
-      register: immuneml_welcome_html_static_status
-
-    - name: Fail if immuneML welcome page was not copied to Galaxy static directory
-      ansible.builtin.fail:
-        msg: >-
-          Cannot configure Galaxy welcome page because
-          {{ galaxy_static_dir_resolved }}/{{ immuneml_welcome_html_resolved }}
-          does not exist after copying welcome assets.
-      when: not immuneml_welcome_html_static_status.stat.exists
-
-    - name: Generate deploy-time welcome page cache-busting version
+    - name: Generate welcome page cache-busting version
       ansible.builtin.command:
         cmd: date +%s
       register: immuneml_welcome_cache_bust_version
       changed_when: false
 
-    - name: Ensure Galaxy uses immuneML welcome page URL with one-time cache busting
+    - name: Ensure Galaxy uses immuneML welcome page
       ansible.builtin.lineinfile:
         path: "{{ galaxy_config_file_resolved }}"
         regexp: '^\s*welcome_url:.*$'
@@ -724,12 +514,12 @@
         - /srv/galaxy/server
         - /srv/galaxy/server/static
 
-    - name: Ensure Galaxy static directories are executable/readable
+    - name: Ensure Galaxy static directories are readable
       ansible.builtin.command:
         cmd: "find {{ galaxy_static_dir_resolved }} -type d -exec chmod 0755 {} +"
       changed_when: false
 
-    - name: Ensure Galaxy static files are readable by nginx
+    - name: Ensure Galaxy static files are readable
       ansible.builtin.command:
         cmd: "find {{ galaxy_static_dir_resolved }} -type f -exec chmod 0644 {} +"
       changed_when: false
@@ -746,11 +536,7 @@
         state: restarted
         daemon_reload: true
 
-    - name: Wait 300 seconds for Galaxy to stabilise after restart
-      ansible.builtin.pause:
-        seconds: 300
-
-    - name: Confirm Galaxy API responds over HTTP after stabilisation wait
+    - name: Wait for Galaxy HTTP API
       ansible.builtin.uri:
         url: "{{ galaxy_http_api_healthcheck_url }}"
         method: GET
@@ -762,7 +548,7 @@
       when:
         - not (galaxy_enable_https_resolved | bool) or not (galaxy_https_redirect | default(false) | bool)
 
-    - name: Confirm Galaxy API responds over HTTPS after stabilisation wait
+    - name: Wait for Galaxy HTTPS API
       ansible.builtin.uri:
         url: "{{ galaxy_https_api_healthcheck_url }}"
         method: GET
@@ -774,7 +560,7 @@
       until: galaxy_https_api_after_restart.status == 200
       when: galaxy_enable_https_resolved
 
-    - name: Report ImmuneML Galaxy tool registration complete
+    - name: Report immuneML Galaxy tool registration complete
       ansible.builtin.debug:
         msg:
           - "ImmuneML Galaxy tools registered in menu."
