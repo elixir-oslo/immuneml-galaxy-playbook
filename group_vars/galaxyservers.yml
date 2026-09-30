@@ -57,7 +57,7 @@ miniconda_channels: "{{ conda_channels }}"
 galaxy_enable_https: true
 galaxy_https_mode: "selfsigned"
 galaxy_server_name: "galaxy.local"
-galaxy_https_redirect: false
+galaxy_https_redirect: true
 
 # ---------------------------------------------------------------------
 # immuneML runtime strategy
@@ -72,7 +72,7 @@ immuneml_cli_runtime_enabled: false
 # ---------------------------------------------------------------------
 # Standard immuneML Galaxy wrappers.
 immuneml_tools_repo_url: "https://github.com/uio-bmi/immuneml_tools.git"
-immuneml_tools_version: "update-immuneml-3-0-27"
+immuneml_tools_version: "main"
 immuneml_tools_source_dir: "/srv/galaxy/immuneml_tools_source"
 immuneml_tools_force_refresh: true
 
@@ -152,7 +152,7 @@ immuneml_prod_macros_path: "{{ immuneml_tool_dir }}/prod_macros.xml"
 # ---------------------------------------------------------------------
 # immuneML welcome/static helper paths
 # ---------------------------------------------------------------------
-immuneml_welcome_repo_url_resolved: "{{ immuneml_welcome_repo_url | default('https://github.com/yehiafarag/immuneml-galaxy-playbook.git') }}"
+immuneml_welcome_repo_url_resolved: "{{ immuneml_welcome_repo_url | default('https://github.com/elixir-oslo/immuneml-galaxy-playbook.git') }}"
 immuneml_welcome_repo_version_resolved: "{{ immuneml_welcome_repo_version | default('main') }}"
 immuneml_welcome_source_dir_resolved: "{{ immuneml_welcome_source_dir | default(galaxy_root_resolved ~ '/immuneml_welcome_source') }}"
 immuneml_welcome_folder_resolved: "{{ immuneml_welcome_folder | default('files') }}"

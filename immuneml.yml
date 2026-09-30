@@ -108,7 +108,7 @@
           - "Galaxy PostgreSQL configured = {{ galaxy_postgresql_configured }}"
 
 # ------------------------------------------------------------------------
-# PLAY 2: Bootstrap minimal Galaxy config before baseline role
+# PLAY 2A: Bootstrap minimal Galaxy config before baseline role
 # ------------------------------------------------------------------------
 - name: Bootstrap Galaxy config directory before baseline role
   hosts: galaxyservers
@@ -141,6 +141,65 @@
           <toolbox monitor="true">
           </toolbox>
 
+
+# ------------------------------------------------------------------------
+# PLAY 2B: Remove stale Galaxy Conda initialization lock
+# ------------------------------------------------------------------------
+- name: Prepare Galaxy Conda state before baseline deployment
+  hosts: galaxyservers
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Check whether a real Galaxy Conda process is running
+      ansible.builtin.shell: |
+        if pgrep -f '[/]srv/galaxy/mutable/dependencies/_conda/bin/conda' >/dev/null; then
+          echo "running"
+        else
+          echo "stopped"
+        fi
+      args:
+        executable: /bin/bash
+      register: galaxy_conda_process_status
+      changed_when: false
+
+    - name: Report active Galaxy Conda process
+      ansible.builtin.command:
+        cmd: >-
+          pgrep -a -f
+          '[/]srv/galaxy/mutable/dependencies/_conda/bin/conda'
+      register: galaxy_conda_active_processes
+      changed_when: false
+      failed_when: false
+      when: galaxy_conda_process_status.stdout == "running"
+
+    - name: Stop if Galaxy Conda is actively modifying an environment
+      ansible.builtin.fail:
+        msg: >-
+          A Galaxy Conda process is currently running. The Conda lock will not
+          be removed because doing so could damage an active environment.
+          Active processes:
+          {{ galaxy_conda_active_processes.stdout_lines | default([]) }}
+      when: galaxy_conda_process_status.stdout == "running"
+
+    - name: Check for Galaxy Conda initialization lock
+      ansible.builtin.stat:
+        path: "{{ galaxy_root_resolved }}/mutable/dependencies/conda.lock"
+      register: galaxy_conda_initialization_lock
+
+    - name: Remove stale Galaxy Conda initialization lock
+      ansible.builtin.file:
+        path: "{{ galaxy_root_resolved }}/mutable/dependencies/conda.lock"
+        state: absent
+      when:
+        - galaxy_conda_initialization_lock.stat.exists
+        - galaxy_conda_process_status.stdout == "stopped"
+
+    - name: Report Galaxy Conda initialization state
+      ansible.builtin.debug:
+        msg: >-
+          Galaxy Conda initialization lock was
+          {{ 'removed' if galaxy_conda_initialization_lock.stat.exists else 'not present' }}.
 # ------------------------------------------------------------------------
 # PLAY 3: Deploy Galaxy baseline
 # ------------------------------------------------------------------------
@@ -248,6 +307,8 @@
           value: "classic"
         - key: display_builtin_converters
           value: "false"
+        - key: carbon_emission_estimates
+          value: "false"
       when: galaxy_enable_conda_dependencies_resolved
 
     - name: Validate Galaxy YAML after runtime configuration
@@ -275,6 +336,14 @@
       ansible.builtin.command:
         cmd: >-
           grep -nE '^\s*display_builtin_converters:\s*false\s*$'
+          {{ galaxy_config_file_resolved }}
+      changed_when: false
+      when: galaxy_enable_conda_dependencies_resolved
+
+    - name: Verify Carbon Footprint reporting is disabled
+      ansible.builtin.command:
+        cmd: >-
+          grep -nE '^\s*carbon_emission_estimates:\s*false\s*$'
           {{ galaxy_config_file_resolved }}
       changed_when: false
 
@@ -346,6 +415,28 @@
         group: "{{ galaxy_runtime_group_resolved }}"
         mode: preserve
 
+
+    - name: Create immuneML HTML rendering allowlist
+      ansible.builtin.copy:
+        dest: "{{ galaxy_config_dir_resolved }}/sanitize_allowlist.txt"
+        owner: "{{ galaxy_runtime_user_resolved }}"
+        group: "{{ galaxy_runtime_group_resolved }}"
+        mode: "0644"
+        content: |
+          immuneml_
+
+    - name: Configure safe HTML rendering for trusted immuneML tools
+      ansible.builtin.lineinfile:
+        path: "{{ galaxy_config_file_resolved }}"
+        regexp: '^\s*{{ item.key }}:.*$'
+        line: "    {{ item.key }}: {{ item.value }}"
+        insertafter: '^galaxy:\s*$'
+        backup: true
+      loop:
+        - key: sanitize_all_html
+          value: "true"
+        - key: sanitize_allowlist_file
+          value: "{{ galaxy_config_dir_resolved }}/sanitize_allowlist.txt"
     - name: Check whether immuneML YAML wrapper exists
       ansible.builtin.stat:
         path: "{{ immuneml_tool_dir }}/immuneml_yaml.xml"
@@ -488,6 +579,48 @@
         owner: "{{ galaxy_runtime_user_resolved }}"
         group: "{{ galaxy_runtime_group_resolved }}"
         mode: preserve
+    - name: Copy local immuneML welcome/static assets into Galaxy static directory
+      ansible.builtin.copy:
+        src: "{{ immuneml_welcome_folder_resolved }}/"
+        dest: "{{ galaxy_static_dir_resolved }}/"
+        owner: "{{ galaxy_runtime_user_resolved }}"
+        group: "{{ galaxy_runtime_group_resolved }}"
+        mode: preserve
+
+    - name: Install immuneML custom Galaxy CSS
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/files/immuneml-custom.css"
+        dest: "{{ galaxy_static_dir_resolved }}/immuneml-custom.css"
+        owner: "{{ galaxy_runtime_user_resolved }}"
+        group: "{{ galaxy_runtime_group_resolved }}"
+        mode: "0644"
+      register: immuneml_custom_css_result
+
+    - name: Generate custom CSS deployment version
+      ansible.builtin.command:
+        cmd: date +%s
+      register: immuneml_custom_css_version
+      changed_when: false
+
+    - name: Inject immuneML custom CSS and favicons into Galaxy HTML
+      ansible.builtin.lineinfile:
+        path: /etc/nginx/sites-available/galaxy
+        regexp: '^\s*sub_filter\s+[''"]</head>[''"].*$'
+        line: >-
+          sub_filter '</head>' '<link rel="stylesheet" href="/static/immuneml-custom.css?v={{ immuneml_custom_css_version.stdout }}" class="full-content" type="text/css"> </head>' ;
+        backup: true
+      register: immuneml_nginx_css_injection
+
+    - name: Validate nginx configuration after custom CSS injection
+      ansible.builtin.command:
+        cmd: nginx -t
+      changed_when: false
+
+    - name: Reload nginx after custom CSS injection
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+      when: immuneml_nginx_css_injection.changed
 
     - name: Generate welcome page cache-busting version
       ansible.builtin.command:
@@ -524,17 +657,84 @@
         cmd: "find {{ galaxy_static_dir_resolved }} -type f -exec chmod 0644 {} +"
       changed_when: false
 
+
+
     - name: Restart nginx after welcome page configuration
       ansible.builtin.systemd:
         name: nginx
         state: restarted
       failed_when: false
 
-    - name: Restart Galaxy after registering immuneML tools
+    - name: Check whether Galaxy Conda is currently running
+      ansible.builtin.command:
+        argv:
+          - pgrep
+          - -f
+          - "[/]srv/galaxy/mutable/dependencies/_conda/bin/conda"
+      register: galaxy_conda_process_check
+      changed_when: false
+      failed_when: false
+
+    - name: Stop deployment if Galaxy Conda is currently running
+      ansible.builtin.fail:
+        msg: >-
+          A Galaxy Conda process is currently running. Galaxy will not be
+          restarted because interrupting this process could leave an incomplete
+          environment or stale lock. Wait for Conda to finish and rerun the
+          playbook.
+      when: galaxy_conda_process_check.rc == 0
+
+    - name: Stop Galaxy before cleaning stale Conda lock
       ansible.builtin.systemd:
         name: "{{ galaxy_service_unit_resolved }}"
-        state: restarted
+        state: stopped
+
+    - name: Wait for Galaxy Gunicorn to stop
+      ansible.builtin.command:
+        cmd: systemctl is-active galaxy-gunicorn.service
+      register: galaxy_gunicorn_stopped
+      changed_when: false
+      failed_when: false
+      retries: 30
+      delay: 2
+      until: galaxy_gunicorn_stopped.stdout != "active"
+
+    - name: Check again for a Conda process after stopping Galaxy
+      ansible.builtin.command:
+        argv:
+          - pgrep
+          - -f
+          - "[/]srv/galaxy/mutable/dependencies/_conda/bin/conda"
+      register: galaxy_conda_after_stop
+      changed_when: false
+      failed_when: false
+
+    - name: Stop if Conda remains active after Galaxy stopped
+      ansible.builtin.fail:
+        msg: >-
+          A Conda process is still active after Galaxy stopped. The Conda lock
+          was not removed. Inspect the active process before continuing.
+      when: galaxy_conda_after_stop.rc == 0
+
+    - name: Remove stale Galaxy Conda initialization lock
+      ansible.builtin.file:
+        path: "{{ galaxy_root_resolved }}/mutable/dependencies/conda.lock"
+        state: absent
+      when: galaxy_conda_after_stop.rc != 0
+
+    - name: Start Galaxy after cleaning stale Conda lock
+      ansible.builtin.systemd:
+        name: "{{ galaxy_service_unit_resolved }}"
+        state: started
         daemon_reload: true
+
+    - name: Wait for Galaxy backend port
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 8080
+        state: started
+        timeout: 600
+        sleep: 5
 
     - name: Wait for Galaxy HTTP API
       ansible.builtin.uri:
