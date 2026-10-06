@@ -469,7 +469,12 @@
           <datatype extension="yml" type="galaxy.datatypes.text:Text" subclass="True" display_in_upload="true"/>
           <datatype extension="immuneml_receptors" type="galaxy.datatypes.text:Html" subclass="True"/>
           <datatype extension="immuneml_receptors.html" type="galaxy.datatypes.text:Html" subclass="True"/>
-
+          <datatype extension="immuneml_sequence" type="galaxy.datatypes.text:Html" subclass="True"/>
+          <datatype extension="immuneml_sequence.html" type="galaxy.datatypes.text:Html" subclass="True"/>
+          <datatype extension="immuneml_receptor" type="galaxy.datatypes.text:Html" subclass="True"/>
+          <datatype extension="immuneml_receptor.html" type="galaxy.datatypes.text:Html" subclass="True"/>
+          <datatype extension="immuneml_repertoire" type="galaxy.datatypes.text:Html" subclass="True"/>
+          <datatype extension="immuneml_repertoire.html" type="galaxy.datatypes.text:Html" subclass="True"/>
     - name: Ensure Galaxy uses managed datatypes config
       ansible.builtin.lineinfile:
         path: "{{ galaxy_config_file_resolved }}"
